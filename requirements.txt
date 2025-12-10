@@ -3,4 +3,5 @@ requests
 matplotlib
 pandas
 flask
+flask_cors
 
