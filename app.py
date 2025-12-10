@@ -5,6 +5,7 @@ import sqlite3
 import pandas as pd
 import os
 import altair as alt
+import time
 
 st.set_page_config(page_title="Taiwan Weather Forecast", page_icon="🇹🇼")
 st.title("🇹🇼 Taiwan Weather Forecast")
@@ -23,24 +24,35 @@ if not api_key:
     st.warning("Please provide your CWA API Key in the sidebar or via environment variable.")
     st.stop()
 
-# 抓取資料
-with st.spinner("Fetching weather data from CWA..."):
+# 選擇單一地區即時顯示
+locations = []
+weather_data = {}
+df_sqlite = pd.DataFrame()
+
+def fetch_data():
+    global weather_data, df_sqlite, locations
     weather_data, df = get_weather_data(api_key)
+    if isinstance(weather_data, dict):
+        locations = sorted(weather_data.keys())
+    else:
+        st.error(weather_data)
+    conn = sqlite3.connect("weather.db")
+    df_sqlite = pd.read_sql_query(
+        "SELECT * FROM weather ORDER BY obs_time DESC LIMIT 50", conn
+    )
+    conn.close()
 
-if isinstance(weather_data, str):
-    st.error(weather_data)
-    st.stop()
+# 初次抓資料
+with st.spinner("Fetching initial data from CWA..."):
+    fetch_data()
 
-if not weather_data:
-    st.warning("No data returned from CWA API.")
-    st.stop()
+# 自動刷新間隔（秒）
+refresh_interval = st.sidebar.slider("Auto-refresh interval (seconds)", 5, 60, 15)
 
-# 選擇地區
-locations = sorted(weather_data.keys())
-selected_location = st.selectbox("Select a location", locations)
-
+# 顯示最新單一地區資料
+selected_location = st.selectbox("Select a location for current temperature", locations)
 if selected_location:
-    temps = weather_data[selected_location]
+    temps = weather_data.get(selected_location, {})
     min_temp = temps.get("MinT", "N/A")
     max_temp = temps.get("MaxT", "N/A")
     col1, col2 = st.columns(2)
@@ -48,52 +60,46 @@ if selected_location:
     col2.metric("🔥 Maximum Temperature (°C)", f"{max_temp} °C")
 
 st.markdown("---")
-st.subheader("📊 Latest 20 records")
-
-# 從 SQLite 讀取最新 20 筆
-conn = sqlite3.connect("weather.db")
-df_sqlite = pd.read_sql_query(
-    "SELECT * FROM weather ORDER BY obs_time DESC LIMIT 20", conn
-)
-conn.close()
-st.dataframe(df_sqlite)
-
-# 歷史折線圖
-st.markdown("---")
-st.subheader("📈 Historical Temperature Trend")
-
-conn = sqlite3.connect("weather.db")
-df_hist = pd.read_sql_query(
-    "SELECT * FROM weather ORDER BY obs_time ASC", conn
-)
-conn.close()
-
-if not df_hist.empty:
-    selected_location_chart = st.selectbox(
-        "Select location for trend chart",
-        sorted(df_hist["location"].unique()),
-        key="trend_chart"
-    )
-
-    df_plot = df_hist[df_hist["location"] == selected_location_chart]
-    df_plot["ObsTime"] = pd.to_datetime(df_plot["obs_time"])
-
-    chart = alt.Chart(df_plot).transform_fold(
-        ["min_temp", "max_temp"],
-        as_=["Temperature_Type", "Temperature"]
-    ).mark_line(point=True).encode(
-        x="ObsTime:T",
-        y="Temperature:Q",
-        color="Temperature_Type:N",
-        tooltip=["ObsTime:T", "Temperature:Q", "Temperature_Type:N"]
-    ).properties(
-        width=700,
-        height=400
-    )
-
-    st.altair_chart(chart, use_container_width=True)
-else:
-    st.info("No historical data available for trend chart.")
+st.subheader("📊 Latest records")
+data_container = st.empty()
+data_container.dataframe(df_sqlite)
 
 st.markdown("---")
-st.info("Data source: Taiwan Central Weather Administration (CWA). Refresh page (F5) to get latest data.")
+st.subheader("📈 Historical Temperature Trend (Multiple Locations)")
+chart_container = st.empty()
+selected_locations_chart = st.multiselect(
+    "Select locations for trend chart",
+    locations,
+    default=[locations[0]] if locations else []
+)
+
+# 自動刷新 loop
+while True:
+    fetch_data()
+
+    # 更新最新資料表
+    data_container.dataframe(df_sqlite)
+
+    # 更新折線圖
+    if not df_sqlite.empty and selected_locations_chart:
+        df_plot = df_sqlite[df_sqlite["location"].isin(selected_locations_chart)]
+        df_plot["ObsTime"] = pd.to_datetime(df_plot["obs_time"])
+        df_melt = df_plot.melt(
+            id_vars=["location", "ObsTime"],
+            value_vars=["min_temp", "max_temp"],
+            var_name="Temperature_Type",
+            value_name="Temperature"
+        )
+        chart = alt.Chart(df_melt).mark_line(point=True).encode(
+            x="ObsTime:T",
+            y="Temperature:Q",
+            color=alt.Color("location:N", title="Location"),
+            strokeDash=alt.StrokeDash("Temperature_Type:N", title="Temperature Type"),
+            tooltip=["ObsTime:T", "Temperature:Q", "location:N", "Temperature_Type:N"]
+        ).properties(
+            width=700,
+            height=400
+        )
+        chart_container.altair_chart(chart, use_container_width=True)
+
+    time.sleep(refresh_interval)
