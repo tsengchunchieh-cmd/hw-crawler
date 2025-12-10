@@ -1,4 +1,3 @@
-requests
 streamlit
-Flask
-Flask-Cors
+requests
+pandas
