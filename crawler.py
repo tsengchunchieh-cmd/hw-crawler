@@ -8,9 +8,12 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 DB_FILE = "weather.db"
-DEFAULT_API_KEY = "CWA-B4D7322F-5C4D-4493-96A6-A22223631758"
+API_KEY = "CWA-B4D7322F-5C4D-4493-96A6-A22223631758"
 
-def get_weather_data(api_key: str = DEFAULT_API_KEY):
+def get_weather_data(api_key: str = API_KEY):
+    """
+    取得 CWA 天氣資料，整理成 dict 並存入 SQLite
+    """
     url = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-C0032-001"
     params = {"Authorization": api_key, "format": "JSON"}
 
@@ -29,8 +32,7 @@ def get_weather_data(api_key: str = DEFAULT_API_KEY):
             result_dict[name] = elements
 
             obs_time = loc.get("time", {}).get("obsTime", datetime.utcnow().isoformat())
-            record = (name, elements.get("MinT"), elements.get("MaxT"), obs_time)
-            records.append(record)
+            records.append((name, elements.get("MinT"), elements.get("MaxT"), obs_time))
 
         # 存入 SQLite
         conn = sqlite3.connect(DB_FILE)
@@ -57,5 +59,8 @@ def get_weather_data(api_key: str = DEFAULT_API_KEY):
 
         return result_dict, df
 
+    except requests.exceptions.HTTPError as e:
+        return f"HTTP Error: {e}", None
     except Exception as e:
         return f"Error fetching data: {e}", None
+
