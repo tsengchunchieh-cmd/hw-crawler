@@ -6,8 +6,6 @@ import pandas as pd
 import os
 import altair as alt
 
-AUTO_REFRESH_INTERVAL = 1800  # 每 30 分鐘刷新一次（秒）
-
 st.set_page_config(page_title="Taiwan Weather Forecast", page_icon="🇹🇼")
 st.title("🇹🇼 Taiwan Weather Forecast")
 st.caption("Historical and latest minimum/maximum temperatures for Taiwan.")
@@ -24,10 +22,6 @@ api_key = api_key_sidebar.strip() or api_key_env.strip()
 if not api_key:
     st.warning("Please provide your CWA API Key in the sidebar or via environment variable.")
     st.stop()
-
-# 自動刷新
-st_autorefresh = st.experimental_data_editor([], key="autorefresh")
-st_autorefresh
 
 # 抓取資料
 with st.spinner("Fetching weather data from CWA..."):
@@ -77,7 +71,8 @@ conn.close()
 if not df_hist.empty:
     selected_location_chart = st.selectbox(
         "Select location for trend chart",
-        sorted(df_hist["location"].unique())
+        sorted(df_hist["location"].unique()),
+        key="trend_chart"
     )
 
     df_plot = df_hist[df_hist["location"] == selected_location_chart]
@@ -101,6 +96,4 @@ else:
     st.info("No historical data available for trend chart.")
 
 st.markdown("---")
-st.info(f"Data source: Taiwan Central Weather Administration (CWA). Page refreshes every {AUTO_REFRESH_INTERVAL//60} minutes.")
-
-st.experimental_rerun()
+st.info("Data source: Taiwan Central Weather Administration (CWA). Refresh page (F5) to get latest data.")
