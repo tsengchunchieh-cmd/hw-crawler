@@ -1,34 +1,31 @@
-from flask import Flask, jsonify, request
-from flask_cors import CORS
-from crawler import get_weather_data
+# crawler.py
+import requests
+import urllib3
 
-app = Flask(__name__)
-CORS(app)
+# 關閉 SSL 憑證警告（CWA 憑證有問題，必要）
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-@app.route('/api/weather', methods=['GET'])
-def weather():
-    """
-    API endpoint to get weather data.
-    Usage:
-    /api/weather?api_key=YOUR_API_KEY
-    """
-    api_key = request.args.get('api_key')
+def get_weather_data(api_key):
+    url = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-C0032-001"
 
-    if not api_key:
-        return jsonify({"error": "API key is required"}), 400
+    params = {
+        "Authorization": api_key,
+        "format": "JSON"
+    }
 
-    data = get_weather_data(api_key)
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            timeout=10,
+            verify=False  # ⭐⭐⭐ 關鍵：關閉 SSL 驗證
+        )
 
-    if isinstance(data, str):
-        return jsonify({"error": data}), 500
+        response.raise_for_status()
 
-    return jsonify(data)
+        return response.json()
 
-if __name__ == "__main__":
-    app.run(
-        host="0.0.0.0",
-        port=5001,
-        debug=False,         # ⭐ 非常重要
-        use_reloader=False  # ⭐ 非常重要
-    )
+    except requests.exceptions.RequestException as e:
+        return f"Error fetching data: {e}"
+
 
