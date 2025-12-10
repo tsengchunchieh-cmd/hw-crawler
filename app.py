@@ -9,7 +9,7 @@ def main():
     st.title("🇹🇼 Taiwan Weather Forecast")
     st.caption("Historical and latest minimum/maximum temperatures for Taiwan.")
 
-    # 抓取資料並存 SQLite
+    # 抓取資料
     with st.spinner("Fetching weather data from CWA..."):
         weather_data, df = get_weather_data()
 
@@ -35,7 +35,7 @@ def main():
 
     st.markdown("---")
     st.subheader("📊 Latest 20 records")
-    
+
     # 從 SQLite 讀取最新 20 筆
     conn = sqlite3.connect("weather.db")
     df_sqlite = pd.read_sql_query(
