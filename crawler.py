@@ -29,13 +29,23 @@ def get_weather_data(api_key: str):
         result_dict = {}
 
         for loc in data_json.get("records", {}).get("location", []):
-            name = loc.get("locationName")
-            elements = {el["elementName"]: el["elementValue"]["value"]
-                        for el in loc.get("weatherElement", [])}
+            name = loc.get("locationName", "Unknown")
+
+            elements = {}
+            for el in loc.get("weatherElement", []):
+                # 安全取值，避免 'elementValue' KeyError
+                val = el.get("elementValue")
+                if isinstance(val, dict):
+                    elements[el.get("elementName", "Unknown")] = val.get("value", "N/A")
+                else:
+                    elements[el.get("elementName", "Unknown")] = "N/A"
+
             result_dict[name] = elements
 
             obs_time = loc.get("time", {}).get("obsTime", datetime.utcnow().isoformat())
-            records.append((name, elements.get("MinT"), elements.get("MaxT"), obs_time))
+            min_t = elements.get("MinT", "N/A")
+            max_t = elements.get("MaxT", "N/A")
+            records.append((name, min_t, max_t, obs_time))
 
         # 存入 SQLite
         conn = sqlite3.connect(DB_FILE)
@@ -56,7 +66,6 @@ def get_weather_data(api_key: str):
         conn.commit()
         conn.close()
 
-        # DataFrame
         df = pd.DataFrame(records, columns=["location", "MinT", "MaxT", "ObsTime"])
         df = df.sort_values(by="ObsTime", ascending=False).reset_index(drop=True)
 
