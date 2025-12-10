@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Taiwan Weather Map</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 flex items-center justify-center h-screen">
+    <div class="container mx-auto p-4">
+        <h1 class="text-3xl font-bold text-center mb-8">Taiwan Weather Map</h1>
+        <div id="map-container" class="flex justify-center">
+            <svg id="taiwan-map" width="400" height="600" viewBox="0 0 400 600" class="bg-white shadow-lg rounded-lg">
+                <!-- Cities will be dynamically added here -->
+            </svg>
+        </div>
+        <div class="text-center mt-4">
+            <input type="text" id="api-key-input" placeholder="Enter your CWA API Key" class="px-4 py-2 border rounded">
+            <button id="load-weather-btn" class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded">
+                Load Weather
+            </button>
+        </div>
+    </div>
+    <script>
+        const apiKeyInput = document.getElementById('api-key-input');
+        const loadWeatherBtn = document.getElementById('load-weather-btn');
+        const mapContainer = document.getElementById('taiwan-map');
+
+        // Define city positions (simplified)
+        const cityPositions = {
+            "臺北市": { x: 200, y: 50 },
+            "新北市": { x: 250, y: 100 },
+            "桃園市": { x: 150, y: 100 },
+            "臺中市": { x: 150, y: 200 },
+            "臺南市": { x: 100, y: 300 },
+            "高雄市": { x: 150, y: 350 },
+            "基隆市": { x: 300, y: 50 },
+            "新竹市": { x: 100, y: 150 },
+            "嘉義市": { x: 50, y: 250 },
+        };
+
+        function drawMap(weatherData) {
+            mapContainer.innerHTML = ''; // Clear previous data
+            for (const city in cityPositions) {
+                if (weatherData[city]) {
+                    const { x, y } = cityPositions[city];
+                    const temps = weatherData[city];
+                    const minTemp = temps.MinT ? temps.MinT.split(' ')[0] : 'N/A';
+                    const maxTemp = temps.MaxT ? temps.MaxT.split(' ')[0] : 'N/A';
+                    
+                    const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                    group.setAttribute('transform', `translate(${x}, ${y})`);
+
+                    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                    rect.setAttribute('width', '100');
+                    rect.setAttribute('height', '50');
+                    rect.setAttribute('fill', 'lightblue');
+                    rect.setAttribute('stroke', 'black');
+                    
+                    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    text.setAttribute('x', '10');
+                    text.setAttribute('y', '20');
+                    text.textContent = city;
+
+                    const tempText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    tempText.setAttribute('x', '10');
+                    tempText.setAttribute('y', '40');
+                    tempText.textContent = `Min: ${minTemp}° / Max: ${maxTemp}°`;
+
+                    group.appendChild(rect);
+                    group.appendChild(text);
+                    group.appendChild(tempText);
+                    mapContainer.appendChild(group);
+                }
+            }
+        }
+
+        loadWeatherBtn.addEventListener('click', () => {
+            const apiKey = apiKeyInput.value;
+            if (!apiKey) {
+                alert('Please enter your API key.');
+                return;
+            }
+
+            fetch(`http://127.0.0.1:5001/api/weather?api_key=${apiKey}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        alert(`Error: ${data.error}`);
+                    } else {
+                        drawMap(data);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error fetching weather data:', error);
+                    alert('Failed to fetch weather data. Make sure the server is running.');
+                });
+        });
+    </script>
+</body>
+</html>
