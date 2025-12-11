@@ -1,46 +1,124 @@
-# ... (Existing imports: requests, json, sqlite3, datetime, etc.)
+import requests
+import json
+import sqlite3
+import datetime
+# 修正點：確保導入 List，以支援 Python < 3.9 的 List 型別提示
+from typing import Union, Dict, Any, List 
 
-# --- Configuration (Unchanged) ---
+# --- Configuration ---
 DATABASE_NAME = "weather_data.db"
-# ... (Other functions: init_db, get_weather_data, save_to_db remain the same)
+API_URL = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-C0032-001" 
 
-# --- New Function: Retrieval Logic ---
-
-def get_history_from_db(limit: int = 10) -> Union[list[Dict[str, Any]], str]:
+# --- Initialization Logic ---
+def init_db():
     """
-    Retrieves the most recent weather records from the SQLite database.
-
-    :param limit: The maximum number of records to retrieve.
-    :return: A list of dictionaries representing the records, or an error string.
+    Initializes the SQLite database: creates the file and the necessary table.
     """
     try:
         conn = sqlite3.connect(DATABASE_NAME)
-        # Use row_factory to get results as dictionaries (rows) instead of tuples
-        conn.row_factory = sqlite3.Row 
         cursor = conn.cursor()
-
-        # SQL SELECT statement: retrieve the newest records first
+        
         cursor.execute("""
-            SELECT id, dataset_id, fetch_timestamp, location_count, raw_data 
-            FROM weather_records 
-            ORDER BY fetch_timestamp DESC 
-            LIMIT ?
-        """, (limit,))
-
-        rows = cursor.fetchall()
+            CREATE TABLE IF NOT EXISTS weather_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dataset_id TEXT NOT NULL,
+                fetch_timestamp TEXT NOT NULL,
+                location_count INTEGER,
+                raw_data TEXT NOT NULL
+            )
+        """)
+        conn.commit()
         conn.close()
+        print(f"Database '{DATABASE_NAME}' initialized successfully.")
+    except sqlite3.Error as e:
+        print(f"FATAL DB ERROR during initialization: {e}")
 
+# --- Fetching Logic ---
+def get_weather_data(api_key: str) -> Union[Dict[str, Any], str]:
+    """
+    Fetches weather data from an external CWA-like API.
+    """
+    params = {
+        'Authorization': api_key,
+        'format': 'JSON',
+        'locationName': '臺北市' 
+    }
+
+    try:
+        response = requests.get(API_URL, params=params, timeout=10)
+        response.raise_for_status() 
+
+        data = response.json()
+
+        if 'success' in data and data['success'] == 'false':
+            return f"API Error: {data.get('message', 'Unknown API failure')}"
+
+        return data
+
+    except requests.exceptions.HTTPError as errh:
+        if response.status_code in [401, 403]:
+            return "Unauthorized or Forbidden: Check your API key."
+        return f"HTTP Error: {errh}"
+    except requests.exceptions.RequestException as err:
+        return f"An unexpected request error occurred: {err}"
+    except json.JSONDecodeError:
+        return "Failed to decode JSON response from the API."
+
+# --- Persistence Logic (Save) ---
+def save_to_db(data: Dict[str, Any]) -> str:
+    """
+    Saves the fetched weather data into the SQLite database.
+    """
+    try:
+        with sqlite3.connect(DATABASE_NAME) as conn:
+            cursor = conn.cursor()
+
+            dataset_id = data.get("records", {}).get("datasetDescription", "unknown_dataset")
+            fetch_time = datetime.datetime.now().isoformat()
+            location_count = len(data["records"]["location"])
+            raw_data_json = json.dumps(data)
+
+            cursor.execute("""
+                INSERT INTO weather_records 
+                (dataset_id, fetch_timestamp, location_count, raw_data) 
+                VALUES (?, ?, ?, ?)
+            """, (dataset_id, fetch_time, location_count, raw_data_json))
+
+            conn.commit()
+        
+        return f"Successfully saved {location_count} records for dataset '{dataset_id}' to SQLite."
+
+    except sqlite3.Error as e:
+        return f"Database Error: Failed to save data to SQLite: {e}"
+
+# --- Retrieval Logic (Read) ---
+# 修正點：使用 List 替換 list[...]
+def get_history_from_db(limit: int = 10) -> Union[List[Dict[str, Any]], str]:
+    """
+    Retrieves the most recent weather records from the SQLite database.
+    """
+    try:
+        with sqlite3.connect(DATABASE_NAME) as conn:
+            conn.row_factory = sqlite3.Row 
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT id, dataset_id, fetch_timestamp, location_count, raw_data 
+                FROM weather_records 
+                ORDER BY fetch_timestamp DESC 
+                LIMIT ?
+            """, (limit,))
+
+            rows = cursor.fetchall()
+        
         # Convert sqlite3.Row objects to standard Python dictionaries
         history_list = [dict(row) for row in rows]
         
-        # Optional: Parse the raw_data JSON string back into a dictionary
-        # In a real app, you might want to return only partial data to save bandwidth
+        # Parse the raw_data JSON string back into a dictionary
         for record in history_list:
             try:
-                # Replace the raw_data string with the parsed JSON object
                 record['raw_data'] = json.loads(record['raw_data'])
             except json.JSONDecodeError:
-                # Handle cases where the stored JSON might be corrupted
                 record['raw_data'] = {"error": "Corrupted JSON data in DB"}
 
         return history_list
