@@ -21,6 +21,7 @@ def init_db():
         conn = sqlite3.connect(DATABASE_NAME)
         cursor = conn.cursor()
         
+        # 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS weather_records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,8 +49,9 @@ def get_weather_data(api_key: str) -> Union[Dict[str, Any], str]:
     }
 
     try:
-        # 【快速修正】: 加入 verify=False 以忽略 SSL 憑證驗證錯誤
-        response = requests.get(API_URL, params=params, timeout=10, verify=False)
+        # 【關鍵修正】: 啟用 verify=False 繞過 SSL 憑證錯誤
+        # 【修正已完成】
+        response = requests.get(API_URL, params=params, timeout=10, verify=False) 
         response.raise_for_status() 
 
         data = response.json()
@@ -60,8 +62,9 @@ def get_weather_data(api_key: str) -> Union[Dict[str, Any], str]:
         return data
 
     except requests.exceptions.HTTPError as errh:
+        # 處理 API 金鑰失效的常見錯誤碼
         if response.status_code in [401, 403]:
-            return "Unauthorized or Forbidden: Check your API key."
+            return "Unauthorized or Forbidden: Check your API key. (Key might be invalid or expired)"
         return f"HTTP Error: {errh}"
     except requests.exceptions.RequestException as err:
         return f"An unexpected request error occurred: {err}"
@@ -131,32 +134,29 @@ def get_history_from_db(limit: int = 10) -> Union[List[Dict[str, Any]], str]:
 
 # --- Main Execution Example ---
 if __name__ == "__main__":
-    # TODO: 請在此處替換為您從 CWA 取得的有效 API Key
-    # 提醒: 您的舊 API Key CWA-F1411072-444D-4D41-B919-FA689356B3E7 可能已失效
-    YOUR_API_KEY = "YOUR_NEW_CWA_API_KEY_HERE" 
+    # 【金鑰更新完成】: 使用您提供的金鑰
+    # 請注意：此金鑰 CWA-F1411072-444D-4D41-B919-FA689356B3E7 可能仍需更新為最新的
+    YOUR_API_KEY = "CWA-F1411072-444D-4D41-B919-FA689356B3E7" 
 
-    if YOUR_API_KEY == "YOUR_NEW_CWA_API_KEY_HERE":
-        print("請先將 YOUR_NEW_CWA_API_KEY_HERE 替換為有效的 CWA API Key！")
-    else:
-        init_db()
+    init_db()
+    
+    print("\n--- 1. 執行資料抓取 (使用 verify=False) ---")
+    weather_data = get_weather_data(YOUR_API_KEY)
+
+    if isinstance(weather_data, dict):
+        print(f"✅ 資料抓取成功。總共 {len(weather_data['records']['location'])} 筆地點資料。")
         
-        print("\n--- 1. 執行資料抓取 (使用 verify=False) ---")
-        weather_data = get_weather_data(YOUR_API_KEY)
+        print("\n--- 2. 儲存資料至資料庫 ---")
+        save_result = save_to_db(weather_data)
+        print(save_result)
+        
+        print("\n--- 3. 讀取歷史資料 ---")
+        history = get_history_from_db(limit=1)
+        if isinstance(history, list) and history:
+            print(f"✅ 成功從資料庫讀取 {len(history)} 筆記錄。")
+            print(f"最新記錄的時間: {history[0]['fetch_timestamp']}")
+        elif isinstance(history, str):
+             print(f"❌ 讀取歷史資料失敗: {history}")
 
-        if isinstance(weather_data, dict):
-            print(f"✅ 資料抓取成功。總共 {len(weather_data['records']['location'])} 筆地點資料。")
-            
-            print("\n--- 2. 儲存資料至資料庫 ---")
-            save_result = save_to_db(weather_data)
-            print(save_result)
-            
-            print("\n--- 3. 讀取歷史資料 ---")
-            history = get_history_from_db(limit=1)
-            if isinstance(history, list) and history:
-                print(f"✅ 成功從資料庫讀取 {len(history)} 筆記錄。")
-                print(f"最新記錄的時間: {history[0]['fetch_timestamp']}")
-            elif isinstance(history, str):
-                 print(f"❌ 讀取歷史資料失敗: {history}")
-
-        else:
-            print(f"❌ 資料抓取失敗: {weather_data}")
+    else:
+        print(f"❌ 資料抓取失敗: {weather_data}")
