@@ -34,8 +34,6 @@ def init_db():
         """)
         conn.commit()
         conn.close()
-        # Streamlit 應用中不適合在每次執行時都輸出 print，改為 st.info
-        # st.info(f"Database '{DATABASE_NAME}' initialized successfully.")
     except sqlite3.Error as e:
         st.error(f"FATAL DB ERROR during initialization: {e}")
 
@@ -116,42 +114,67 @@ def get_weather_data(api_key: str, location: str) -> Union[Dict[str, Any], str]:
     except json.JSONDecodeError:
         return "Failed to decode JSON response from the API."
 
-# --- 3. 解析邏輯 (從 crawler.py 繼承) ---
+# --- 3. 解析邏輯 (修正後的版本) ---
 def parse_weather_forecast(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """解析 CWA 36 小時預報資料，提取關鍵資訊。"""
     forecasts = []
+    
     try:
+        # 確保 location 陣列存在且不為空
+        if not data.get('records') or not data['records'].get('location'):
+            st.error("API 回傳資料結構異常：缺少 'records' 或 'location' 欄位。")
+            return []
+            
         location = data['records']['location'][0]
-        location_name = location['locationName']
-        weather_elements = location['weatherElement']
+        location_name = location.get('locationName', '未知地點')
+        weather_elements = location.get('weatherElement', [])
         
         element_map = {elem['elementName']: elem['time'] for elem in weather_elements}
         
-        if 'Wx' in element_map:
-            wx_times = element_map['Wx']
+        # 預報資料以 Wx (天氣現象) 的時間為準
+        wx_times = element_map.get('Wx')
+        if not wx_times:
+            st.warning("資料中缺少 'Wx' (天氣現象) 元素，無法解析預報時段。")
+            return []
             
-            for period in wx_times:
-                start_time = period['startTime']
+        for period in wx_times:
+            start_time = period.get('startTime', 'N/A')
+            
+            # 輔助函式：安全地從元素中提取值
+            def safe_extract_value(element_list, start_time):
+                item = next((
+                    t for t in element_list 
+                    if t.get('startTime') == start_time
+                ), None)
                 
-                weather_description = period['elementValue'][0]['value']
-                
-                # 提取 PoP, MinT, MaxT (使用 next() 處理找不到的情況)
-                pop_value = next((t['elementValue'][0]['value'] for t in element_map.get('PoP', []) if t['startTime'] == start_time), 'N/A')
-                min_t = next((t['elementValue'][0]['value'] for t in element_map.get('MinT', []) if t['startTime'] == start_time), 'N/A')
-                max_t = next((t['elementValue'][0]['value'] for t in element_map.get('MaxT', []) if t['startTime'] == start_time), 'N/A')
-                
-                forecasts.append({
-                    'Location': location_name,
-                    'Start Time': start_time,
-                    'End Time': period['endTime'],
-                    'Weather': weather_description,
-                    'PoP (%)': pop_value,
-                    'Min Temp (°C)': min_t,
-                    'Max Temp (°C)': max_t,
-                })
+                # 檢查 elementValue 鍵和列表是否為空
+                if item and item.get('elementValue') and item['elementValue']:
+                    # 這裡是修正的關鍵：確保我們能安全地獲取 value
+                    return item['elementValue'][0].get('value', 'N/A')
+                return 'N/A'
+            
+            # 提取天氣現象 (Wx) - Wx 的值可以直接從 period 自身提取
+            weather_value_list = period.get('elementValue')
+            # 修正點：安全存取
+            weather_description = weather_value_list[0].get('value', 'N/A') if weather_value_list else 'N/A'
+            
+            # 提取 PoP, MinT, MaxT
+            pop_value = safe_extract_value(element_map.get('PoP', []), start_time)
+            min_t = safe_extract_value(element_map.get('MinT', []), start_time)
+            max_t = safe_extract_value(element_map.get('MaxT', []), start_time)
+            
+            forecasts.append({
+                'Location': location_name,
+                'Start Time': start_time,
+                'End Time': period.get('endTime', 'N/A'),
+                'Weather': weather_description,
+                'PoP (%)': pop_value,
+                'Min Temp (°C)': min_t,
+                'Max Temp (°C)': max_t,
+            })
 
     except Exception as e:
-        st.warning(f"資料解析發生錯誤: {e}")
+        st.error(f"資料解析發生未預期錯誤: {e}")
         return []
         
     return forecasts
@@ -197,7 +220,8 @@ if st.button("🚀 抓取最新 36 小時天氣預報"):
                 st.subheader(f"最新預報：{location_input} ({len(parsed_forecast)} 個時段)")
                 st.dataframe(df, use_container_width=True)
             else:
-                st.warning("資料解析失敗或預報格式不正確。")
+                # 如果解析失敗但未拋出異常，顯示警告
+                st.warning("資料解析失敗或預報格式不正確，請檢查 API 回傳的原始資料。")
         else:
             st.error(f"❌ 資料抓取失敗: {weather_data}")
 
