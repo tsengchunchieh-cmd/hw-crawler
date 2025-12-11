@@ -1,10 +1,128 @@
-# --- 3. 解析邏輯 (最終修正版本，簡化時間匹配) ---
+import streamlit as st
+import pandas as pd
+import requests
+import json
+import sqlite3
+import datetime
+import urllib3
+from typing import Union, Dict, Any, List 
+
+# 關閉 SSL 憑證警告（CWA 憑證問題的必要修正）
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# --- Configuration ---
+DATABASE_NAME = "weather_data.db"
+API_URL = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-C0032-001" 
+# 【已更新金鑰】: 請確認此金鑰 CWA-F1411072-444D-4D41-B919-FA689356B3E7 有效
+DEFAULT_API_KEY = "CWA-F1411072-444D-4D41-B919-FA689356B3E7" 
+DEFAULT_LOCATION = '臺北市'
+
+# --- 1. 資料庫邏輯 (從 crawler.py 繼承) ---
+def init_db():
+    """初始化 SQLite 資料庫。"""
+    try:
+        conn = sqlite3.connect(DATABASE_NAME)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS weather_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dataset_id TEXT NOT NULL,
+                fetch_timestamp TEXT NOT NULL,
+                location_count INTEGER,
+                raw_data TEXT NOT NULL
+            )
+        """)
+        conn.commit()
+        conn.close()
+    except sqlite3.Error as e:
+        st.error(f"FATAL DB ERROR during initialization: {e}")
+
+def save_to_db(data: Dict[str, Any]) -> str:
+    """將抓取的資料儲存至資料庫。"""
+    try:
+        with sqlite3.connect(DATABASE_NAME) as conn:
+            cursor = conn.cursor()
+            dataset_id = data.get("records", {}).get("datasetDescription", "unknown_dataset")
+            fetch_time = datetime.datetime.now().isoformat()
+            location_count = len(data["records"]["location"])
+            raw_data_json = json.dumps(data)
+
+            cursor.execute("""
+                INSERT INTO weather_records 
+                (dataset_id, fetch_timestamp, location_count, raw_data) 
+                VALUES (?, ?, ?, ?)
+            """, (dataset_id, fetch_time, location_count, raw_data_json))
+            conn.commit()
+        
+        return f"Successfully saved {location_count} records for dataset '{dataset_id}' to SQLite."
+    except sqlite3.Error as e:
+        return f"Database Error: Failed to save data to SQLite: {e}"
+
+def get_history_from_db(limit: int = 10) -> Union[List[Dict[str, Any]], str]:
+    """從資料庫檢索歷史記錄。"""
+    try:
+        with sqlite3.connect(DATABASE_NAME) as conn:
+            conn.row_factory = sqlite3.Row 
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, dataset_id, fetch_timestamp, location_count, raw_data 
+                FROM weather_records 
+                ORDER BY fetch_timestamp DESC 
+                LIMIT ?
+            """, (limit,))
+            rows = cursor.fetchall()
+            
+            history_list = [dict(row) for row in rows]
+            
+            # 將 raw_data JSON 欄位解碼
+            for record in history_list:
+                try:
+                    record['raw_data'] = json.loads(record['raw_data'])
+                except json.JSONDecodeError:
+                    record['raw_data'] = {"error": "Corrupted JSON data in DB"}
+
+            return history_list
+    except sqlite3.Error as e:
+        return f"Database Error: Failed to retrieve history from SQLite: {e}"
+
+# --- 2. 爬蟲邏輯 (從 crawler.py 繼承) ---
+def get_weather_data(api_key: str, location: str) -> Union[Dict[str, Any], str]:
+    """獲取 CWA 天氣資料，包含 SSL 修正。"""
+    params = {
+        'Authorization': api_key,
+        'format': 'JSON',
+        'locationName': location 
+    }
+
+    try:
+        # 關鍵修正：verify=False
+        response = requests.get(API_URL, params=params, timeout=15, verify=False) 
+        response.raise_for_status() 
+        
+        data = response.json()
+        if 'success' in data and data['success'] == 'false':
+            return f"API Error: {data.get('message', 'Unknown API failure')}"
+
+        return data
+
+    except requests.exceptions.HTTPError as errh:
+        if response.status_code in [401, 403]:
+            return f"Unauthorized or Forbidden: Check your API key ({response.status_code})."
+        return f"HTTP Error: {errh}"
+    except requests.exceptions.RequestException as err:
+        return f"An unexpected request error occurred: {err}"
+    except json.JSONDecodeError:
+        return "Failed to decode JSON response from the API."
+
+# --- 3. 解析邏輯 (最終修正後的版本) ---
 def parse_weather_forecast(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """解析 CWA 36 小時預報資料，提取關鍵資訊。"""
     forecasts = []
     
     try:
+        # 確保 location 陣列存在且不為空
         if not data.get('records') or not data['records'].get('location'):
+            st.error("API 回傳資料結構異常：缺少 'records' 或 'location' 欄位。")
             return []
             
         location = data['records']['location'][0]
@@ -14,40 +132,39 @@ def parse_weather_forecast(data: Dict[str, Any]) -> List[Dict[str, Any]]:
         # 將所有氣象要素轉換為以 elementName 為鍵的字典 (值為其 time 列表)
         element_map = {elem['elementName']: elem['time'] for elem in weather_elements}
         
+        # 預報資料以 Wx (天氣現象) 的時間為準
         wx_times = element_map.get('Wx')
         if not wx_times:
+            st.warning("資料中缺少 'Wx' (天氣現象) 元素，無法解析預報時段。")
             return []
-
+            
         # 輔助函式：安全地從元素列表中提取特定時間的值
         def safe_extract_value(element_name, period_time):
             # 遍歷該元素的所有時間點
             for t in element_map.get(element_name, []):
-                # 我們不使用 t['startTime'] 進行匹配，而是檢查時間點是否重疊或匹配
+                # 檢查 start_time 是否匹配
                 if t.get('startTime') == period_time.get('startTime'):
-                    # 確保 elementValue 鍵和列表存在
+                    # 檢查 elementValue 鍵和列表是否為空
                     if t.get('elementValue') and t['elementValue']:
+                        # 這裡是修正的關鍵：確保我們能安全地獲取 value
                         return t['elementValue'][0].get('value', 'N/A')
             return 'N/A'
             
         for period in wx_times:
             start_time = period.get('startTime', 'N/A')
             end_time = period.get('endTime', 'N/A')
-            
-            # 提取天氣現象 (Wx) - 直接從 Wx 的 period 中提取
+
+            # 提取天氣現象 (Wx) - Wx 的值可以直接從 period 自身提取
             weather_value_list = period.get('elementValue')
+            # 修正點：安全存取
             weather_description = weather_value_list[0].get('value', 'N/A') if weather_value_list else 'N/A'
             
-            # 提取 PoP, MinT, MaxT (傳入當前預報期 period 進行時間匹配)
+            # 提取 PoP, MinT, MaxT
+            # 使用當前的 period 來匹配時間
             pop_value = safe_extract_value('PoP', period)
             min_t = safe_extract_value('MinT', period)
             max_t = safe_extract_value('MaxT', period)
             
-            # 額外檢查：如果 MaxT 是空，可能是因為它是另一個時段的開始時間，我們需要確保它是當前時段的值
-            if max_t == 'N/A' and 'MaxT' in element_map:
-                # 為了避免過度複雜化，這裡我們假設 MinT 和 MaxT 的時間點結構是一致的
-                # 若問題持續，可能是 API 預報期欄位名稱不同
-                pass 
-                
             forecasts.append({
                 'Location': location_name,
                 'Start Time': start_time,
@@ -60,8 +177,84 @@ def parse_weather_forecast(data: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     except Exception as e:
         st.error(f"資料解析發生未預期錯誤: {e}")
-        # 如果是 Streamlit 應用，顯示原始資料幫助我們除錯
-        # st.json(data) 
         return []
         
     return forecasts
+
+# --- 4. Streamlit 應用介面 ---
+st.set_page_config(page_title="CWA 天氣資料抓取與分析", layout="wide")
+st.title("🇹🇼 CWA 天氣資料即時抓取與歷史記錄")
+
+# 確保資料庫在應用程式啟動時初始化
+init_db() 
+
+# --- 側邊欄設定 ---
+with st.sidebar:
+    st.header("⚙️ API 設定")
+    api_key_input = st.text_input("API Key (CWA)", value=DEFAULT_API_KEY, type="password")
+    location_input = st.text_input("地點名稱", value=DEFAULT_LOCATION)
+    
+    st.subheader("📚 歷史記錄查詢")
+    history_limit = st.slider("顯示記錄筆數", min_value=1, max_value=50, value=5)
+
+# --- 主應用區塊 ---
+
+st.header("即時天氣預報抓取")
+if st.button("🚀 抓取最新 36 小時天氣預報"):
+    # 使用 Streamlit 內建的 spinner 顯示載入狀態
+    with st.spinner(f'正在抓取 {location_input} 的資料...'):
+        
+        # 執行抓取
+        weather_data = get_weather_data(api_key_input, location_input)
+
+        if isinstance(weather_data, dict):
+            st.success("✅ 資料抓取成功！")
+            
+            # 儲存資料
+            save_msg = save_to_db(weather_data)
+            st.info(save_msg)
+            
+            # 解析並顯示預報
+            parsed_forecast = parse_weather_forecast(weather_data)
+            
+            if parsed_forecast:
+                df = pd.DataFrame(parsed_forecast)
+                st.subheader(f"最新預報：{location_input} ({len(parsed_forecast)} 個時段)")
+                st.dataframe(df, use_container_width=True)
+            else:
+                # 如果解析失敗但未拋出異常，顯示警告
+                st.warning("資料解析失敗或預報格式不正確，請檢查 API 回傳的原始資料。")
+        else:
+            st.error(f"❌ 資料抓取失敗: {weather_data}")
+
+# --- 歷史資料顯示區塊 ---
+st.divider()
+st.header("歷史抓取記錄")
+
+history_data = get_history_from_db(history_limit)
+
+if isinstance(history_data, str) and history_data.startswith("Database Error:"):
+    st.error(f"❌ 歷史資料檢索失敗: {history_data}")
+elif history_data:
+    st.info(f"顯示最近 {len(history_data)} 筆記錄。")
+    
+    # 建立一個包含關鍵資訊的 DataFrame
+    history_df_list = []
+    for record in history_data:
+        history_df_list.append({
+            "ID": record["id"],
+            "抓取時間": record["fetch_timestamp"],
+            "資料集描述": record["raw_data"]["records"]["datasetDescription"],
+            "地點數": record["location_count"],
+        })
+    
+    st.dataframe(pd.DataFrame(history_df_list), use_container_width=True)
+    
+    # 選項：展開查看原始 JSON
+    if st.checkbox("展開原始 JSON 資料"):
+        selected_id = st.selectbox("選擇要查看的記錄 ID", [r["id"] for r in history_data])
+        raw_record = next(r for r in history_data if r["id"] == selected_id)
+        st.json(raw_record["raw_data"])
+
+else:
+    st.info("資料庫中尚無歷史記錄。")
