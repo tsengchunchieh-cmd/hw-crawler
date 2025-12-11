@@ -1,55 +1,49 @@
-# crawler.py
-import requests
-import sqlite3
-import urllib3
+# ... (Existing imports: requests, json, sqlite3, datetime, etc.)
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# --- Configuration (Unchanged) ---
+DATABASE_NAME = "weather_data.db"
+# ... (Other functions: init_db, get_weather_data, save_to_db remain the same)
 
-DB_FILE = "weather.db"
+# --- New Function: Retrieval Logic ---
 
-def get_weather_data(api_key):
-    url = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-C0032-001"
-    params = {"Authorization": api_key, "format": "JSON"}
+def get_history_from_db(limit: int = 10) -> Union[list[Dict[str, Any]], str]:
+    """
+    Retrieves the most recent weather records from the SQLite database.
 
+    :param limit: The maximum number of records to retrieve.
+    :return: A list of dictionaries representing the records, or an error string.
+    """
     try:
-        resp = requests.get(url, params=params, timeout=10, verify=False)
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as e:
-        return f"Error fetching data: {e}"
+        conn = sqlite3.connect(DATABASE_NAME)
+        # Use row_factory to get results as dictionaries (rows) instead of tuples
+        conn.row_factory = sqlite3.Row 
+        cursor = conn.cursor()
 
-def save_to_db(data):
-    if "records" not in data:
-        return "No records found"
+        # SQL SELECT statement: retrieve the newest records first
+        cursor.execute("""
+            SELECT id, dataset_id, fetch_timestamp, location_count, raw_data 
+            FROM weather_records 
+            ORDER BY fetch_timestamp DESC 
+            LIMIT ?
+        """, (limit,))
 
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
+        rows = cursor.fetchall()
+        conn.close()
 
-    # 建立資料表
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS weather (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        location TEXT,
-        weather TEXT,
-        min_temp REAL,
-        max_temp REAL,
-        obs_time TEXT
-    )
-    """)
+        # Convert sqlite3.Row objects to standard Python dictionaries
+        history_list = [dict(row) for row in rows]
+        
+        # Optional: Parse the raw_data JSON string back into a dictionary
+        # In a real app, you might want to return only partial data to save bandwidth
+        for record in history_list:
+            try:
+                # Replace the raw_data string with the parsed JSON object
+                record['raw_data'] = json.loads(record['raw_data'])
+            except json.JSONDecodeError:
+                # Handle cases where the stored JSON might be corrupted
+                record['raw_data'] = {"error": "Corrupted JSON data in DB"}
 
-    # 插入資料
-    for loc in data["records"]["location"]:
-        name = loc.get("locationName")
-        weather = loc["weatherElement"][0]["elementValue"]["value"]
-        min_temp = float(loc["weatherElement"][2]["elementValue"]["value"])
-        max_temp = float(loc["weatherElement"][4]["elementValue"]["value"])
-        obs_time = loc["time"]["obsTime"]
+        return history_list
 
-        c.execute("""
-        INSERT INTO weather (location, weather, min_temp, max_temp, obs_time)
-        VALUES (?, ?, ?, ?, ?)
-        """, (name, weather, min_temp, max_temp, obs_time))
-
-    conn.commit()
-    conn.close()
-    return "Data saved successfully"
+    except sqlite3.Error as e:
+        return f"Database Error: Failed to retrieve history from SQLite: {e}"
